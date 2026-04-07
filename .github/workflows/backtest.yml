@@ -112,6 +112,7 @@ jobs:
             --config config.json \
             --strategy-list ${{ steps.strategies.outputs.list }} \
             --timerange ${{ steps.dates.outputs.timerange }} \
+            --timeframe 1h \
             --userdir user_data \
             2>&1 | tee user_data/backtest_results/backtest_log.txt
 
