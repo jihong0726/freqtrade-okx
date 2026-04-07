@@ -67,6 +67,7 @@ jobs:
           pip install --upgrade pip
           pip install freqtrade
           pip install technical
+          freqtrade --version
 
       - name: Set date range
         id: dates
@@ -84,8 +85,11 @@ jobs:
             --timerange ${{ steps.dates.outputs.timerange }} \
             --timeframe 5m 15m 1h 4h \
             --userdir user_data
-          echo "--- Downloaded data files ---"
-          find user_data/data -name "*.json" | head -20
+
+          echo "=== Downloaded data files ==="
+          find user_data/data -type f | head -30
+          echo "=== Data file count ==="
+          find user_data/data -type f -name "*.json" | wc -l
 
       - name: Discover strategies
         id: strategies
@@ -101,141 +105,165 @@ jobs:
 
       - name: Run backtesting
         run: |
+          mkdir -p user_data/backtest_results
+
+          echo "=== Running backtesting ==="
           freqtrade backtesting \
             --config config.json \
             --strategy-list ${{ steps.strategies.outputs.list }} \
             --timerange ${{ steps.dates.outputs.timerange }} \
             --userdir user_data \
-            --export trades \
             2>&1 | tee user_data/backtest_results/backtest_log.txt
 
           echo ""
-          echo "--- All result files ---"
-          find user_data/backtest_results -type f -name "*.json" 2>/dev/null
-          find user_data/backtest_results -type f -name "*.json" -exec ls -la {} \;
+          echo "=== DEBUG: All files in backtest_results ==="
+          find user_data/backtest_results -type f 2>/dev/null
+          echo ""
+          echo "=== DEBUG: All JSON files anywhere in user_data ==="
+          find user_data -name "*.json" -not -path "*/data/*" 2>/dev/null
+          echo ""
+          echo "=== DEBUG: backtest_log.txt size ==="
+          wc -l user_data/backtest_results/backtest_log.txt
 
       - name: Parse results & generate comparison.json
         run: |
           python3 << 'PYEOF'
-          import json, glob, sys, os
+          import json, glob, sys, os, re
 
-          # Search broadly for any JSON result files
-          search_paths = [
-            "user_data/backtest_results/**/*.json",
-            "user_data/backtest_results/*.json",
-          ]
-
-          all_files = []
-          for pattern in search_paths:
-            all_files.extend(glob.glob(pattern, recursive=True))
-          all_files = sorted(set(all_files))
-
-          print(f"Found {len(all_files)} JSON files:")
-          for f in all_files:
-            size = os.path.getsize(f)
-            print(f"  {f} ({size} bytes)")
-
+          results_dir = "user_data/backtest_results"
           strategies = []
 
-          for f in all_files:
+          # ============================================================
+          # Method 1: Try to find and parse JSON result files
+          # ============================================================
+          all_json = []
+          for root, dirs, files in os.walk("user_data"):
+            for f in files:
+              full = os.path.join(root, f)
+              if f.endswith(".json") and "backtest" in root and "data" not in root:
+                all_json.append(full)
+
+          # Also search with glob
+          for pattern in ["user_data/backtest_results/**/*.json",
+                          "user_data/backtest_results/*.json",
+                          "user_data/**/*backtest*.json"]:
+            all_json.extend(glob.glob(pattern, recursive=True))
+
+          all_json = sorted(set(f for f in all_json if "data/okx" not in f and f.endswith(".json")))
+
+          print(f"=== Method 1: Found {len(all_json)} JSON files ===")
+          for f in all_json:
+            size = os.path.getsize(f)
+            print(f"  {f} ({size} bytes)")
+            if size < 10:
+              print(f"    SKIP: too small")
+              continue
             try:
               with open(f) as fh:
                 data = json.load(fh)
-
-              # Debug: show top-level keys
               if isinstance(data, dict):
-                print(f"  Keys in {f}: {list(data.keys())[:10]}")
-
-              # Format 1: strategy dict (from --strategy-list)
-              if isinstance(data, dict) and "strategy" in data:
-                for name, sd in data["strategy"].items():
-                  if name in [s["name"] for s in strategies]:
-                    continue
-                  total = sd.get("total_trades", 0)
-                  wins = sd.get("wins", 0)
-                  wr = round(wins / total * 100, 1) if total > 0 else 0
-                  strategies.append({
-                    "name": name,
-                    "total_trades": total,
-                    "wins": wins,
-                    "losses": sd.get("losses", 0),
-                    "draws": sd.get("draws", 0),
-                    "win_rate": wr,
-                    "profit_pct": round(sd.get("profit_total", 0) * 100, 2),
-                    "profit_total_abs": round(sd.get("profit_total_abs", 0), 2),
-                    "avg_profit": round(sd.get("profit_mean", 0) * 100, 2),
-                    "max_drawdown": round(sd.get("max_drawdown_abs", 0), 2),
-                    "max_drawdown_pct": round(sd.get("max_drawdown", 0) * 100, 2),
-                    "sharpe": round(sd.get("sharpe", 0), 2),
-                    "sortino": round(sd.get("sortino", 0), 2),
-                    "calmar": round(sd.get("calmar", 0), 2),
-                    "profit_factor": round(sd.get("profit_factor", 0), 2),
-                    "expectancy": round(sd.get("expectancy", 0), 4),
-                    "avg_duration": str(sd.get("holding_avg", "N/A")),
-                    "best_pair": sd.get("best_pair", "N/A"),
-                    "worst_pair": sd.get("worst_pair", "N/A"),
-                    "trading_volume": round(sd.get("trading_volume", 0), 2),
-                  })
-
-              # Format 2: strategy_comparison array
-              if isinstance(data, dict) and "strategy_comparison" in data and not strategies:
-                for row in data["strategy_comparison"]:
-                  trades = row.get("trades", 0)
-                  wins = row.get("wins", 0)
-                  strategies.append({
-                    "name": row.get("key", "unknown"),
-                    "total_trades": trades,
-                    "wins": wins,
-                    "losses": row.get("losses", 0),
-                    "draws": row.get("draws", 0),
-                    "win_rate": round(wins / max(trades, 1) * 100, 1),
-                    "profit_pct": round(row.get("profit_total", 0), 2),
-                    "profit_total_abs": round(row.get("profit_total_abs", 0), 2),
-                    "avg_profit": round(row.get("profit_mean", 0), 2),
-                    "max_drawdown": round(row.get("max_drawdown_abs", 0), 2),
-                    "max_drawdown_pct": round(row.get("max_drawdown_account", 0) * 100, 2),
-                    "sharpe": 0,
-                    "sortino": 0,
-                    "calmar": 0,
-                    "profit_factor": 0,
-                    "expectancy": 0,
-                    "avg_duration": "N/A",
-                    "best_pair": "N/A",
-                    "worst_pair": "N/A",
-                    "trading_volume": 0,
-                  })
-
+                print(f"    Top keys: {list(data.keys())[:15]}")
+                if "strategy" in data:
+                  for name, sd in data["strategy"].items():
+                    if name in [s["name"] for s in strategies]:
+                      continue
+                    total = sd.get("total_trades", 0)
+                    wins = sd.get("wins", 0)
+                    wr = round(wins / total * 100, 1) if total > 0 else 0
+                    strategies.append({
+                      "name": name,
+                      "total_trades": total,
+                      "wins": wins,
+                      "losses": sd.get("losses", 0),
+                      "draws": sd.get("draws", 0),
+                      "win_rate": wr,
+                      "profit_pct": round(sd.get("profit_total", 0) * 100, 2),
+                      "profit_total_abs": round(sd.get("profit_total_abs", 0), 2),
+                      "avg_profit": round(sd.get("profit_mean", 0) * 100, 2),
+                      "max_drawdown": round(sd.get("max_drawdown_abs", 0), 2),
+                      "max_drawdown_pct": round(sd.get("max_drawdown", 0) * 100, 2),
+                      "sharpe": round(sd.get("sharpe", 0), 2),
+                      "sortino": round(sd.get("sortino", 0), 2),
+                      "calmar": round(sd.get("calmar", 0), 2),
+                      "profit_factor": round(sd.get("profit_factor", 0), 2),
+                      "expectancy": round(sd.get("expectancy", 0), 4),
+                      "avg_duration": str(sd.get("holding_avg", "N/A")),
+                      "best_pair": sd.get("best_pair", "N/A"),
+                      "worst_pair": sd.get("worst_pair", "N/A"),
+                      "trading_volume": round(sd.get("trading_volume", 0), 2),
+                    })
+                    print(f"    Found strategy: {name} ({total} trades)")
+                if "strategy_comparison" in data and not strategies:
+                  for row in data["strategy_comparison"]:
+                    trades = row.get("trades", 0)
+                    wins = row.get("wins", 0)
+                    strategies.append({
+                      "name": row.get("key", "unknown"),
+                      "total_trades": trades,
+                      "wins": wins,
+                      "losses": row.get("losses", 0),
+                      "draws": row.get("draws", 0),
+                      "win_rate": round(wins / max(trades, 1) * 100, 1),
+                      "profit_pct": round(row.get("profit_total", 0), 2),
+                      "profit_total_abs": round(row.get("profit_total_abs", 0), 2),
+                      "avg_profit": 0, "max_drawdown": 0, "max_drawdown_pct": 0,
+                      "sharpe": 0, "sortino": 0, "calmar": 0,
+                      "profit_factor": 0, "expectancy": 0,
+                      "avg_duration": "N/A", "best_pair": "N/A",
+                      "worst_pair": "N/A", "trading_volume": 0,
+                    })
             except Exception as e:
-              print(f"  Warning parsing {f}: {e}", file=sys.stderr)
+              print(f"    Error: {e}")
 
+          # ============================================================
+          # Method 2: Parse backtest_log.txt (stdout) as fallback
+          # ============================================================
           if not strategies:
-            print("WARNING: No valid backtest results found in any JSON file.")
-            print("This could mean:")
-            print("  1. Strategies generated 0 trades in the given timerange")
-            print("  2. Result JSON format is unexpected")
-            # Write empty comparison so summary step still works
-            with open("user_data/backtest_results/comparison.json", "w") as f:
-              json.dump([], f)
-            sys.exit(0)
+            print("\n=== Method 2: Parsing backtest_log.txt ===")
+            log_file = f"{results_dir}/backtest_log.txt"
+            if os.path.exists(log_file):
+              with open(log_file) as f:
+                log_content = f.read()
 
-          # Composite score
-          for s in strategies:
-            wr = s.get("win_rate", 0)
-            pf = s.get("profit_pct", 0)
-            sh = s.get("sharpe", 0)
-            md = s.get("max_drawdown_pct", 0)
-            s["composite_score"] = round(
-              wr * 0.25 + pf * 0.25 + sh * 10 * 0.25 + (100 - abs(md)) * 0.25, 1
-            )
+              print(f"  Log file size: {len(log_content)} chars")
 
-          strategies.sort(key=lambda x: x["composite_score"], reverse=True)
+              # Print last 100 lines for debugging
+              lines = log_content.strip().split("\n")
+              print(f"  Total lines: {len(lines)}")
+              print("  === Last 80 lines of log ===")
+              for line in lines[-80:]:
+                print(f"  | {line}")
 
-          with open("user_data/backtest_results/comparison.json", "w") as f:
+              # Try to find result table in log output
+              # Freqtrade outputs a table like:
+              # |   Strategy |   Trades |   Avg Profit |   Tot Profit |   ...
+              current_strategy = None
+              for line in lines:
+                # Look for strategy result summary lines
+                if "BACKTESTING REPORT" in line or "STRATEGY SUMMARY" in line:
+                  print(f"  >> Found section: {line.strip()}")
+
+          # ============================================================
+          # Calculate composite scores
+          # ============================================================
+          if strategies:
+            for s in strategies:
+              wr = s.get("win_rate", 0)
+              pf = s.get("profit_pct", 0)
+              sh = s.get("sharpe", 0)
+              md = s.get("max_drawdown_pct", 0)
+              s["composite_score"] = round(
+                wr * 0.25 + pf * 0.25 + sh * 10 * 0.25 + (100 - abs(md)) * 0.25, 1
+              )
+            strategies.sort(key=lambda x: x["composite_score"], reverse=True)
+            print(f"\n=== SUCCESS: {len(strategies)} strategies parsed ===")
+            for i, s in enumerate(strategies):
+              print(f"  #{i+1} {s['name']}: Trades={s['total_trades']} WR={s['win_rate']}% Profit={s['profit_pct']:+.2f}% Score={s['composite_score']}")
+          else:
+            print("\n=== FAILED: No strategies found by any method ===")
+
+          with open(f"{results_dir}/comparison.json", "w") as f:
             json.dump(strategies, f, indent=2, ensure_ascii=False)
-
-          print(f"\nGenerated comparison.json with {len(strategies)} strategies")
-          for i, s in enumerate(strategies):
-            print(f"  #{i+1} {s['name']}: WR={s['win_rate']}% Profit={s['profit_pct']:+.2f}% Sharpe={s['sharpe']} Score={s['composite_score']}")
           PYEOF
 
       - name: Generate GitHub Step Summary
@@ -253,32 +281,34 @@ jobs:
 
           if not strategies:
             summary += "⚠️ 未找到有效回测结果\n\n"
-            summary += "可能原因：策略在该时间段内未产生交易信号，请尝试调整时间范围或检查策略逻辑。\n"
+            summary += "可能原因：策略在该时间段内未产生交易信号，请尝试调整时间范围或检查策略逻辑。\n\n"
+            # Include debug info from log
+            log_path = "user_data/backtest_results/backtest_log.txt"
+            if os.path.exists(log_path):
+              with open(log_path) as f:
+                lines = f.read().strip().split("\n")
+              summary += "### Debug: 回测日志最后 30 行\n\n```\n"
+              for line in lines[-30:]:
+                summary += line + "\n"
+              summary += "```\n"
           else:
             summary += "| 排名 | 策略 | 交易数 | 胜率 | 总收益% | 最大回撤% | Sharpe | 综合分 |\n"
             summary += "|------|------|--------|------|---------|-----------|--------|--------|\n"
-
             medals = ["🏆", "🥈", "🥉"]
             for i, s in enumerate(strategies):
               medal = medals[i] if i < 3 else str(i + 1)
               wr_icon = "🟢" if s["win_rate"] >= 60 else "🟡" if s["win_rate"] >= 45 else "🔴"
               summary += f"| {medal} | {s['name']} | {s['total_trades']} | {s['win_rate']}% {wr_icon} | {s['profit_pct']:+.2f}% | {s['max_drawdown_pct']:.2f}% | {s['sharpe']} | {s['composite_score']} |\n"
-
             best = strategies[0]
             summary += f"\n### 🏆 推荐策略: {best['name']}\n"
             summary += f"胜率 {best['win_rate']}% | 收益 {best['profit_pct']:+.2f}% | Sharpe {best['sharpe']} | 综合分 {best['composite_score']}\n"
-
             summary += "\n### ⚠️ 过拟合风险检测\n"
             for s in strategies:
               risks = []
-              if s["total_trades"] < 30:
-                risks.append("交易次数<30")
-              if s["win_rate"] > 80:
-                risks.append("胜率>80%")
-              if s["profit_pct"] > 100:
-                risks.append("收益>100%")
-              if abs(s["max_drawdown_pct"]) < 1 and s["total_trades"] > 20:
-                risks.append("回撤<1%")
+              if s["total_trades"] < 30: risks.append("交易次数<30")
+              if s["win_rate"] > 80: risks.append("胜率>80%")
+              if s["profit_pct"] > 100: risks.append("收益>100%")
+              if abs(s["max_drawdown_pct"]) < 1 and s["total_trades"] > 20: risks.append("回撤<1%")
               if risks:
                 summary += f"- ⚠️ **{s['name']}**: {', '.join(risks)}\n"
               else:
