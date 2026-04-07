@@ -1,1 +1,238 @@
+name: Freqtrade Backtest
 
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: '回测开始日期 (YYYYMMDD)'
+        required: false
+        default: '20250101'
+      end_date:
+        description: '回测结束日期 (YYYYMMDD)'
+        required: false
+        default: '20260401'
+  push:
+    paths:
+      - 'user_data/strategies/S*.py'
+      - 'config.json'
+  schedule:
+    - cron: '0 2 * * 1'  # 每周一凌晨 2 点
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install TA-Lib C library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential wget
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make
+          sudo make install
+          cd ..
+          rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+
+      - name: Install Freqtrade
+        run: |
+          pip install --upgrade pip
+          pip install freqtrade
+          pip install technical
+
+      - name: Set date range
+        id: dates
+        run: |
+          START="${{ github.event.inputs.start_date || '20250101' }}"
+          END="${{ github.event.inputs.end_date || '20260401' }}"
+          echo "start=$START" >> $GITHUB_OUTPUT
+          echo "end=$END" >> $GITHUB_OUTPUT
+          echo "timerange=${START}-${END}" >> $GITHUB_OUTPUT
+
+      - name: Download OKX data
+        run: |
+          freqtrade download-data \
+            --config config.json \
+            --timerange ${{ steps.dates.outputs.timerange }} \
+            --timeframe 5m 15m 1h 4h \
+            --userdir user_data
+
+      - name: Discover strategies
+        id: strategies
+        run: |
+          STRATS=""
+          for f in user_data/strategies/S*.py; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .py)
+            STRATS="$STRATS $name"
+          done
+          echo "list=$STRATS" >> $GITHUB_OUTPUT
+          echo "Strategies found:$STRATS"
+
+      - name: Run backtesting
+        run: |
+          mkdir -p user_data/backtest_results
+          freqtrade backtesting \
+            --config config.json \
+            --strategy-list ${{ steps.strategies.outputs.list }} \
+            --timerange ${{ steps.dates.outputs.timerange }} \
+            --userdir user_data \
+            --export trades \
+            --export-filename user_data/backtest_results/result.json \
+            2>&1 | tee user_data/backtest_results/backtest_log.txt
+
+      - name: Parse results & generate comparison.json
+        run: |
+          python3 << 'PYEOF'
+          import json, glob, sys
+
+          results_dir = "user_data/backtest_results"
+          strategies = []
+
+          for f in sorted(glob.glob(f"{results_dir}/*result*.json")):
+            try:
+              with open(f) as fh:
+                data = json.load(fh)
+              if "strategy" in data:
+                for name, sd in data["strategy"].items():
+                  if name in [s["name"] for s in strategies]:
+                    continue
+                  total = sd.get("total_trades", 0)
+                  wins = sd.get("wins", 0)
+                  wr = round(wins / total * 100, 1) if total > 0 else 0
+                  strategies.append({
+                    "name": name,
+                    "total_trades": total,
+                    "wins": wins,
+                    "losses": sd.get("losses", 0),
+                    "draws": sd.get("draws", 0),
+                    "win_rate": wr,
+                    "profit_pct": round(sd.get("profit_total", 0) * 100, 2),
+                    "profit_total_abs": round(sd.get("profit_total_abs", 0), 2),
+                    "avg_profit": round(sd.get("profit_mean", 0) * 100, 2),
+                    "max_drawdown": round(sd.get("max_drawdown_abs", 0), 2),
+                    "max_drawdown_pct": round(sd.get("max_drawdown", 0) * 100, 2),
+                    "sharpe": round(sd.get("sharpe", 0), 2),
+                    "sortino": round(sd.get("sortino", 0), 2),
+                    "calmar": round(sd.get("calmar", 0), 2),
+                    "profit_factor": round(sd.get("profit_factor", 0), 2),
+                    "expectancy": round(sd.get("expectancy", 0), 4),
+                    "avg_duration": str(sd.get("holding_avg", "N/A")),
+                    "best_pair": sd.get("best_pair", "N/A"),
+                    "worst_pair": sd.get("worst_pair", "N/A"),
+                    "trading_volume": round(sd.get("trading_volume", 0), 2),
+                  })
+            except Exception as e:
+              print(f"Warning: {f}: {e}", file=sys.stderr)
+
+          if not strategies:
+            print("No valid results found")
+            sys.exit(0)
+
+          for s in strategies:
+            wr = s.get("win_rate", 0)
+            pf = s.get("profit_pct", 0)
+            sh = s.get("sharpe", 0)
+            md = s.get("max_drawdown_pct", 0)
+            s["composite_score"] = round(
+              wr * 0.25 + pf * 0.25 + sh * 10 * 0.25 + (100 - abs(md)) * 0.25, 1
+            )
+
+          strategies.sort(key=lambda x: x["composite_score"], reverse=True)
+
+          with open(f"{results_dir}/comparison.json", "w") as f:
+            json.dump(strategies, f, indent=2, ensure_ascii=False)
+
+          print(f"Generated comparison.json with {len(strategies)} strategies")
+
+          # Also print summary
+          for i, s in enumerate(strategies):
+            rank = i + 1
+            print(f"  #{rank} {s['name']}: WR={s['win_rate']}% Profit={s['profit_pct']:+.2f}% Sharpe={s['sharpe']} Score={s['composite_score']}")
+          PYEOF
+
+      - name: Generate GitHub Step Summary
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          results_dir = "user_data/backtest_results"
+          try:
+            with open(f"{results_dir}/comparison.json") as f:
+              strategies = json.load(f)
+          except:
+            strategies = []
+
+          summary = "## 📊 Freqtrade 回测结果\n\n"
+
+          if not strategies:
+            summary += "⚠️ 未找到有效回测结果\n"
+          else:
+            summary += "| 排名 | 策略 | 交易数 | 胜率 | 总收益% | 最大回撤% | Sharpe | 综合分 |\n"
+            summary += "|------|------|--------|------|---------|-----------|--------|--------|\n"
+
+            medals = ["🏆", "🥈", "🥉"]
+            for i, s in enumerate(strategies):
+              medal = medals[i] if i < 3 else str(i + 1)
+              wr_icon = "🟢" if s["win_rate"] >= 60 else "🟡" if s["win_rate"] >= 45 else "🔴"
+              summary += f"| {medal} | {s['name']} | {s['total_trades']} | {s['win_rate']}% {wr_icon} | {s['profit_pct']:+.2f}% | {s['max_drawdown_pct']:.2f}% | {s['sharpe']} | {s['composite_score']} |\n"
+
+            best = strategies[0]
+            summary += f"\n### 🏆 推荐策略: {best['name']}\n"
+            summary += f"胜率 {best['win_rate']}% | 收益 {best['profit_pct']:+.2f}% | Sharpe {best['sharpe']} | 综合分 {best['composite_score']}\n"
+
+            # Overfit detection
+            summary += "\n### ⚠️ 过拟合风险检测\n"
+            for s in strategies:
+              risks = []
+              if s["total_trades"] < 30:
+                risks.append("交易次数<30")
+              if s["win_rate"] > 80:
+                risks.append("胜率>80%")
+              if s["profit_pct"] > 100:
+                risks.append("收益>100%")
+              if abs(s["max_drawdown_pct"]) < 1 and s["total_trades"] > 20:
+                risks.append("回撤<1%")
+
+              if risks:
+                summary += f"- ⚠️ **{s['name']}**: {', '.join(risks)}\n"
+              else:
+                summary += f"- ✅ **{s['name']}**: 无明显过拟合信号\n"
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write(summary)
+          PYEOF
+
+      - name: Prepare Pages deployment
+        run: |
+          mkdir -p public
+          cp backtest_report.html public/index.html
+          cp user_data/backtest_results/comparison.json public/comparison.json 2>/dev/null || echo '[]' > public/comparison.json
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          force_orphan: true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: |
+            user_data/backtest_results/
+          retention-days: 90
