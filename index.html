@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Freqtrade 多策略回测对比报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0e17; color: #e1e4e8; }
+
+  .header { background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 100%); padding: 32px; border-bottom: 1px solid #1e3a5f; }
+  .header h1 { font-size: 24px; color: #58a6ff; margin-bottom: 8px; }
+  .header p { font-size: 13px; color: #8b949e; }
+
+  .controls { display: flex; gap: 16px; padding: 20px 32px; background: #0d1117; border-bottom: 1px solid #21262d; flex-wrap: wrap; align-items: center; }
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+  .control-group input, .control-group select { background: #161b22; border: 1px solid #30363d; color: #e1e4e8; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+  .control-group input:focus, .control-group select:focus { outline: none; border-color: #58a6ff; }
+  .btn { background: #238636; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; align-self: flex-end; }
+  .btn:hover { background: #2ea043; }
+  .btn-secondary { background: #30363d; }
+  .btn-secondary:hover { background: #3d444d; }
+
+  .main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+
+  /* 数据输入提示 */
+  .data-hint { background: #161b22; border: 1px dashed #30363d; border-radius: 12px; padding: 40px; text-align: center; margin-bottom: 24px; }
+  .data-hint h3 { color: #58a6ff; margin-bottom: 12px; }
+  .data-hint p { color: #8b949e; font-size: 14px; margin-bottom: 8px; }
+  .data-hint code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #79c0ff; }
+  .data-hint textarea { width: 100%; max-width: 700px; height: 200px; margin-top: 16px; background: #0d1117; border: 1px solid #30363d; color: #e1e4e8; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; resize: vertical; }
+
+  /* 排名卡片 */
+  .ranking { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .rank-card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 20px; position: relative; overflow: hidden; transition: transform 0.2s; }
+  .rank-card:hover { transform: translateY(-2px); }
+  .rank-card.gold { border-color: #f0b429; }
+  .rank-card.gold::before { content: '🏆 最优策略'; position: absolute; top: 0; right: 0; background: #f0b429; color: #0a0e17; padding: 4px 12px; font-size: 11px; font-weight: 700; border-radius: 0 12px 0 8px; }
+  .rank-card.silver { border-color: #8b949e; }
+  .rank-card.bronze { border-color: #cd7f32; }
+  .rank-num { font-size: 48px; font-weight: 800; color: #21262d; position: absolute; top: 8px; left: 16px; }
+  .rank-card .name { font-size: 18px; font-weight: 700; color: #e1e4e8; margin-bottom: 4px; padding-left: 40px; }
+  .rank-card .type { font-size: 12px; color: #8b949e; margin-bottom: 16px; padding-left: 40px; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .metric { text-align: center; }
+  .metric .val { font-size: 22px; font-weight: 700; }
+  .metric .label { font-size: 11px; color: #8b949e; margin-top: 2px; }
+  .val-green { color: #3fb950; }
+  .val-yellow { color: #d29922; }
+  .val-red { color: #f85149; }
+
+  /* 详细对比表 */
+  .table-section { margin-bottom: 32px; }
+  .table-section h2 { font-size: 18px; color: #e1e4e8; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: #161b22; color: #8b949e; padding: 12px; text-align: center; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #21262d; cursor: pointer; user-select: none; white-space: nowrap; }
+  thead th:hover { color: #58a6ff; }
+  thead th:first-child { text-align: left; }
+  thead th .sort-icon { margin-left: 4px; font-size: 10px; }
+  tbody td { padding: 14px 12px; text-align: center; border-bottom: 1px solid #21262d; font-size: 14px; }
+  tbody td:first-child { text-align: left; font-weight: 600; color: #58a6ff; }
+  tbody tr:hover { background: #161b22; }
+  .bar { height: 6px; border-radius: 3px; margin-top: 4px; }
+  .bar-green { background: linear-gradient(90deg, #238636, #3fb950); }
+  .bar-yellow { background: linear-gradient(90deg, #9e6a03, #d29922); }
+  .bar-red { background: linear-gradient(90deg, #da3633, #f85149); }
+
+  /* 策略说明 */
+  .strategy-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 32px; }
+  .strat-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 16px; }
+  .strat-card h4 { color: #58a6ff; margin-bottom: 4px; font-size: 14px; }
+  .strat-card .desc { color: #8b949e; font-size: 13px; margin-bottom: 8px; }
+  .strat-card .tags span { display: inline-block; background: #0d1117; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 4px; color: #8b949e; }
+
+  .footer { text-align: center; padding: 32px; color: #484f58; font-size: 12px; }
+
+  /* AI 推荐区域 */
+  .ai-recommendation { background: linear-gradient(135deg, #0d2137 0%, #0a1628 100%); border: 1px solid #1f6feb; border-radius: 12px; padding: 24px; margin-bottom: 32px; }
+  .ai-recommendation h2 { color: #58a6ff; margin-bottom: 12px; font-size: 16px; }
+  .ai-recommendation .verdict { font-size: 15px; color: #c9d1d9; line-height: 1.7; }
+  .ai-recommendation .verdict strong { color: #3fb950; }
+  .ai-recommendation .verdict .warn { color: #d29922; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Freqtrade 多策略回测对比报告</h1>
+  <p>自动对比多个交易策略的胜率、收益率、风险指标，AI 推荐最优策略</p>
+</div>
+
+<div class="controls">
+  <div class="control-group">
+    <label>回测开始日期</label>
+    <input type="date" id="startDate" value="2025-01-01">
+  </div>
+  <div class="control-group">
+    <label>回测结束日期</label>
+    <input type="date" id="endDate" value="2026-04-01">
+  </div>
+  <div class="control-group">
+    <label>排序依据</label>
+    <select id="sortBy">
+      <option value="win_rate">胜率</option>
+      <option value="profit_pct">总收益</option>
+      <option value="sharpe">Sharpe 比率</option>
+      <option value="max_drawdown">最大回撤（低优先）</option>
+      <option value="total_trades">交易次数</option>
+    </select>
+  </div>
+  <button class="btn btn-secondary" onclick="document.getElementById('dataInput').style.display='block'">导入回测数据</button>
+  <button class="btn" onclick="loadDemoData()">加载示例数据</button>
+</div>
+
+<div class="main">
+
+  <!-- 数据导入区 -->
+  <div class="data-hint" id="dataInput">
+    <h3>导入回测结果</h3>
+    <p>运行 <code>bash run_backtest_all.sh</code> 后，将 <code>user_data/backtest_results/comparison.json</code> 内容粘贴到下方：</p>
+    <textarea id="jsonInput" placeholder='[
+  {
+    "name": "S01_RSI_Reversal",
+    "total_trades": 142,
+    "wins": 85,
+    "losses": 50,
+    "draws": 7,
+    "win_rate": 59.9,
+    "profit_pct": 18.45,
+    ...
+  }
+]'></textarea>
+    <br>
+    <button class="btn" onclick="importData()" style="margin-top: 12px;">解析并生成报告</button>
+  </div>
+
+  <!-- 排名卡片 -->
+  <div class="ranking" id="rankingCards"></div>
+
+  <!-- AI 推荐 -->
+  <div class="ai-recommendation" id="aiRecommendation" style="display: none;"></div>
+
+  <!-- 对比表 -->
+  <div class="table-section" id="tableSection" style="display: none;">
+    <h2>详细数据对比</h2>
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortTable('name')">策略 <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('total_trades')">交易数 <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('win_rate')">胜率 <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('profit_pct')">总收益% <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('avg_profit')">均收益% <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('max_drawdown')">最大回撤 <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('sharpe')">Sharpe <span class="sort-icon">↕</span></th>
+          <th onclick="sortTable('sortino')">Sortino <span class="sort-icon">↕</span></th>
+          <th>持仓时间</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+  </div>
+
+  <!-- 策略说明 -->
+  <div class="strategy-info">
+    <div class="strat-card">
+      <h4>S01 — RSI 反转</h4>
+      <div class="desc">RSI 超卖买入、超买卖出。均值回归思路。</div>
+      <div class="tags"><span>震荡行情</span><span>1h</span><span>中频</span></div>
+    </div>
+    <div class="strat-card">
+      <h4>S02 — MACD 金叉死叉</h4>
+      <div class="desc">MACD 线上穿信号线做多，配合 EMA200 过滤。</div>
+      <div class="tags"><span>趋势行情</span><span>1h</span><span>中频</span></div>
+    </div>
+    <div class="strat-card">
+      <h4>S03 — 布林带均值回归</h4>
+      <div class="desc">价格触下轨 + RSI 低位买入，触上轨卖出。</div>
+      <div class="tags"><span>区间震荡</span><span>1h</span><span>中频</span></div>
+    </div>
+    <div class="strat-card">
+      <h4>S04 — EMA 多头排列</h4>
+      <div class="desc">短中长 EMA 多头排列 + ADX 过滤做多。</div>
+      <div class="tags"><span>强趋势</span><span>4h</span><span>低频</span></div>
+    </div>
+    <div class="strat-card">
+      <h4>S05 — 随机 RSI + 放量</h4>
+      <div class="desc">StochRSI 超卖金叉 + 成交量放大入场。</div>
+      <div class="tags"><span>短线波段</span><span>15m</span><span>高频</span></div>
+    </div>
+    <div class="strat-card">
+      <h4>S06 — 多指标综合</h4>
+      <div class="desc">RSI + MACD + BB + EMA 四指标投票，≥3 看多才入场。</div>
+      <div class="tags"><span>高胜率</span><span>1h</span><span>低频</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  Freqtrade + OKX 多策略回测系统 | 数据仅供参考，历史表现不代表未来收益
+</div>
+
+<script>
+let currentData = [];
+let currentSort = { key: 'win_rate', asc: false };
+
+const STRATEGY_TYPES = {
+  'S01_RSI_Reversal': '震荡反转',
+  'S02_MACD_Cross': '趋势跟踪',
+  'S03_BollingerBand': '均值回归',
+  'S04_EMA_Trend': '趋势跟踪',
+  'S05_Stoch_RSI': '短线波段',
+  'S06_Combined_Multi': '多因子综合',
+};
+
+function loadDemoData() {
+  const demo = [
+    { name: "S01_RSI_Reversal", total_trades: 142, wins: 85, losses: 50, draws: 7, win_rate: 59.9, profit_pct: 18.45, avg_profit: 0.13, max_drawdown: 8.2, sharpe: 1.42, sortino: 2.1, calmar: 2.25, profit_factor: 1.68, avg_duration: "4h 22m", best_pair: "ETH/USDT", worst_pair: "DOGE/USDT" },
+    { name: "S02_MACD_Cross", total_trades: 87, wins: 49, losses: 33, draws: 5, win_rate: 56.3, profit_pct: 24.8, avg_profit: 0.29, max_drawdown: 12.5, sharpe: 1.65, sortino: 2.4, calmar: 1.98, profit_factor: 1.82, avg_duration: "8h 15m", best_pair: "BTC/USDT", worst_pair: "ADA/USDT" },
+    { name: "S03_BollingerBand", total_trades: 168, wins: 107, losses: 52, draws: 9, win_rate: 63.7, profit_pct: 15.3, avg_profit: 0.09, max_drawdown: 6.1, sharpe: 1.38, sortino: 1.9, calmar: 2.51, profit_factor: 1.55, avg_duration: "3h 48m", best_pair: "SOL/USDT", worst_pair: "XRP/USDT" },
+    { name: "S04_EMA_Trend", total_trades: 34, wins: 21, losses: 11, draws: 2, win_rate: 61.8, profit_pct: 32.6, avg_profit: 0.96, max_drawdown: 15.3, sharpe: 1.78, sortino: 2.8, calmar: 2.13, profit_factor: 2.15, avg_duration: "2d 6h", best_pair: "BTC/USDT", worst_pair: "MATIC/USDT" },
+    { name: "S05_Stoch_RSI", total_trades: 312, wins: 165, losses: 130, draws: 17, win_rate: 52.9, profit_pct: 11.2, avg_profit: 0.04, max_drawdown: 9.8, sharpe: 0.95, sortino: 1.3, calmar: 1.14, profit_factor: 1.22, avg_duration: "1h 12m", best_pair: "SOL/USDT", worst_pair: "DOT/USDT" },
+    { name: "S06_Combined_Multi", total_trades: 52, wins: 38, losses: 11, draws: 3, win_rate: 73.1, profit_pct: 21.7, avg_profit: 0.42, max_drawdown: 5.4, sharpe: 2.15, sortino: 3.2, calmar: 4.02, profit_factor: 2.45, avg_duration: "6h 40m", best_pair: "ETH/USDT", worst_pair: "AVAX/USDT" },
+  ];
+  currentData = demo;
+  document.getElementById('dataInput').style.display = 'none';
+  renderAll();
+}
+
+function importData() {
+  try {
+    const raw = document.getElementById('jsonInput').value.trim();
+    currentData = JSON.parse(raw);
+    document.getElementById('dataInput').style.display = 'none';
+    renderAll();
+  } catch (e) {
+    alert('JSON 解析失败: ' + e.message);
+  }
+}
+
+function renderAll() {
+  const sortKey = document.getElementById('sortBy').value;
+  sortData(sortKey);
+  renderRanking();
+  renderTable();
+  renderAIRecommendation();
+}
+
+function sortData(key) {
+  currentSort.key = key;
+  currentData.sort((a, b) => {
+    if (key === 'max_drawdown') return (a[key] || 0) - (b[key] || 0); // 回撤越小越好
+    return (b[key] || 0) - (a[key] || 0);
+  });
+}
+
+function sortTable(key) {
+  if (currentSort.key === key) {
+    currentData.reverse();
+  } else {
+    sortData(key);
+  }
+  renderTable();
+}
+
+function wrColor(val) {
+  if (val >= 60) return 'val-green';
+  if (val >= 45) return 'val-yellow';
+  return 'val-red';
+}
+
+function profitColor(val) {
+  if (val > 0) return 'val-green';
+  if (val === 0) return 'val-yellow';
+  return 'val-red';
+}
+
+function renderRanking() {
+  const container = document.getElementById('rankingCards');
+  // Sort by composite score for ranking
+  const ranked = [...currentData].sort((a, b) => {
+    const scoreA = (a.win_rate || 0) * 0.3 + (a.profit_pct || 0) * 0.3 + (a.sharpe || 0) * 20 * 0.2 + (100 - (a.max_drawdown || 0)) * 0.2;
+    const scoreB = (b.win_rate || 0) * 0.3 + (b.profit_pct || 0) * 0.3 + (b.sharpe || 0) * 20 * 0.2 + (100 - (b.max_drawdown || 0)) * 0.2;
+    return scoreB - scoreA;
+  });
+
+  container.innerHTML = ranked.slice(0, 3).map((s, i) => {
+    const cls = i === 0 ? 'gold' : i === 1 ? 'silver' : 'bronze';
+    const type = STRATEGY_TYPES[s.name] || '未知';
+    return `
+      <div class="rank-card ${cls}">
+        <div class="rank-num">${i + 1}</div>
+        <div class="name">${s.name}</div>
+        <div class="type">${type}</div>
+        <div class="metrics">
+          <div class="metric">
+            <div class="val ${wrColor(s.win_rate)}">${s.win_rate}%</div>
+            <div class="label">胜率</div>
+          </div>
+          <div class="metric">
+            <div class="val ${profitColor(s.profit_pct)}">${s.profit_pct > 0 ? '+' : ''}${s.profit_pct}%</div>
+            <div class="label">总收益</div>
+          </div>
+          <div class="metric">
+            <div class="val" style="color: ${s.sharpe >= 1.5 ? '#3fb950' : s.sharpe >= 1 ? '#d29922' : '#f85149'}">${s.sharpe}</div>
+            <div class="label">Sharpe</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderTable() {
+  const tbody = document.getElementById('tableBody');
+  document.getElementById('tableSection').style.display = 'block';
+
+  tbody.innerHTML = currentData.map(s => {
+    const wrCls = wrColor(s.win_rate);
+    const barCls = s.win_rate >= 60 ? 'bar-green' : s.win_rate >= 45 ? 'bar-yellow' : 'bar-red';
+    return `
+      <tr>
+        <td>${s.name}</td>
+        <td>${s.total_trades || 0}</td>
+        <td>
+          <span class="${wrCls}" style="font-weight:700">${s.win_rate}%</span>
+          <div class="bar ${barCls}" style="width: ${s.win_rate}%"></div>
+        </td>
+        <td class="${profitColor(s.profit_pct)}" style="font-weight:600">${s.profit_pct > 0 ? '+' : ''}${s.profit_pct}%</td>
+        <td>${s.avg_profit || 0}%</td>
+        <td class="val-red">${s.max_drawdown || 0}%</td>
+        <td style="color: ${(s.sharpe||0) >= 1.5 ? '#3fb950' : '#d29922'}">${s.sharpe || 0}</td>
+        <td>${s.sortino || 0}</td>
+        <td style="color: #8b949e; font-size: 12px;">${s.avg_duration || 'N/A'}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderAIRecommendation() {
+  const container = document.getElementById('aiRecommendation');
+  container.style.display = 'block';
+
+  if (currentData.length === 0) return;
+
+  // 计算综合评分
+  const scored = currentData.map(s => ({
+    ...s,
+    composite: (s.win_rate || 0) * 0.3 + (s.profit_pct || 0) * 0.3 + (s.sharpe || 0) * 20 * 0.2 + (100 - (s.max_drawdown || 0)) * 0.2,
+  })).sort((a, b) => b.composite - a.composite);
+
+  const best = scored[0];
+  const highestWR = [...currentData].sort((a, b) => b.win_rate - a.win_rate)[0];
+  const highestProfit = [...currentData].sort((a, b) => b.profit_pct - a.profit_pct)[0];
+  const lowestDD = [...currentData].sort((a, b) => a.max_drawdown - b.max_drawdown)[0];
+
+  // 过拟合检测（参考 ErikKerkvliet/FreqtradeHyperOpt 的 Reality Gap 分析）
+  const overfitWarnings = currentData.map(s => {
+    const risks = [];
+    if ((s.total_trades || 0) < 30) risks.push('交易次数<30，统计意义不足');
+    if ((s.win_rate || 0) > 80) risks.push('胜率>80%，疑似过拟合');
+    if ((s.profit_pct || 0) > 100) risks.push('收益>100%，疑似过拟合');
+    if (Math.abs(s.max_drawdown || 0) < 1 && (s.total_trades || 0) > 20) risks.push('回撤<1%，疑似过拟合');
+    return { name: s.name, risks };
+  }).filter(s => s.risks.length > 0);
+
+  const overfitHTML = overfitWarnings.length > 0
+    ? `<br><br><strong style="color:#d29922">⚠️ 过拟合风险检测：</strong><br>` +
+      overfitWarnings.map(s => `· <span class="warn">${s.name}</span>: ${s.risks.join('；')}`).join('<br>')
+    : `<br><br><strong style="color:#3fb950">✅ 过拟合检测：所有策略无明显过拟合信号</strong>`;
+
+  container.innerHTML = `
+    <h2>🤖 AI 策略推荐</h2>
+    <div class="verdict">
+      <strong>综合最优: ${best.name}</strong>（综合得分 ${best.composite.toFixed(1)}）<br><br>
+      综合权衡胜率(25%)、收益(25%)、Sharpe(25%)、回撤(25%) 后，<strong>${best.name}</strong> 表现最均衡。<br><br>
+      分项冠军：<br>
+      · 最高胜率：<strong>${highestWR.name}</strong>（${highestWR.win_rate}%）— 适合追求稳定的保守型交易者<br>
+      · 最高收益：<strong>${highestProfit.name}</strong>（+${highestProfit.profit_pct}%）— 适合能承受回撤的激进型交易者<br>
+      · 最低回撤：<strong>${lowestDD.name}</strong>（${lowestDD.max_drawdown}%）— 适合风险厌恶型交易者<br>
+      ${overfitHTML}<br><br>
+      <span class="warn">⚠️ 回测胜率 ≠ 未来胜率。建议：① dry_run 模拟盘跑 2-4 周验证 ② 用 -o 参数启用 HyperOpt 优化参数 ③ 对比不同时间段回测结果排除过拟合</span>
+    </div>
+  `;
+}
+
+// 监听排序切换
+document.getElementById('sortBy').addEventListener('change', () => {
+  if (currentData.length > 0) renderAll();
+});
+</script>
+</body>
+</html>
