@@ -11,12 +11,7 @@ name: Freqtrade Backtest
         description: '回测结束日期 (YYYYMMDD)'
         required: false
         default: '20260401'
-  push:
-    paths:
-      - 'user_data/strategies/S*.py'
-      - 'config.json'
-  schedule:
-    - cron: '0 2 * * 1'
+  # Retired automatic triggers; historical data retained. Manual audit only.
 
 permissions:
   contents: write
